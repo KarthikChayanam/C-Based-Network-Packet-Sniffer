@@ -6,9 +6,13 @@
 
 static pcap_t *handle = NULL;
 
+void decode_packet(const u_char *packet, int size);
+
 void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char *packet) {
     printf("Captured packet of length: %d bytes\n", header->len);
+    decode_packet(packet, header->len);
 }
+
 
 void cleanup(int signum) {
     if (handle) {
