@@ -9,6 +9,7 @@ void usage(const char *progname) {
     printf("Example: %s eth0\n", progname);
 }
 
+
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         usage(argv[0]);
