@@ -8,8 +8,6 @@ build/
 
 build
 
-# Makefile
-Makefile
 
 # OS files
 .DS_Store
