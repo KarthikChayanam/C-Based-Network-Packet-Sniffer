@@ -12,6 +12,7 @@ typedef struct {
     const char *interface;
     Protocol proto_filter;
     int packet_limit;
+    const char *output_file;  // NEW
 } SnifferArgs;
 
 int parse_args(int argc, char *argv[], SnifferArgs *args);

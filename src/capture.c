@@ -3,71 +3,94 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <arpa/inet.h>     
-#include <netinet/ip.h>   
-#include "args.h"           // SnifferArgs
-                             
+#include <time.h>
+#include <arpa/inet.h>    
+#include <netinet/ip.h>     
+#include <netinet/tcp.h>
+#include <netinet/udp.h>
+#include "args.h"           /* SnifferArgs, enums    */
+
 void decode_packet(const u_char *packet, int size);
 
-static pcap_t              *handle       = NULL;
-static const SnifferArgs   *g_args       = NULL;
-static volatile int         packet_count = 0;
+static pcap_t            *handle       = NULL;      /* pcap session handle   */
+static const SnifferArgs *g_args       = NULL;      /* CLI options           */
+static volatile int       packet_count = 0;         /* packets processed     */
+static FILE              *log_file     = NULL;      /* CSV log (optional)    */
 
-static void sigint_handler(int signum)
+static void sigint_handler(int sig)
 {
-    (void)signum;          
+    (void)sig;
     if (handle) {
-        pcap_breakloop(handle); 
+        pcap_breakloop(handle);
     }
 }
 
-/* Ethernet header (14 bytes) */
 struct eth_header {
-    u_char  dst[6];
-    u_char  src[6];
+    u_char   dst[6];
+    u_char   src[6];
     uint16_t type;
 };
-
 
 static void handle_packet(u_char *user,
                           const struct pcap_pkthdr *hdr,
                           const u_char *packet)
 {
-    (void)user;  /* not used */
+    (void)user;   /* not used */
 
-    /* Limit by packet count (if -n was provided) */
+    /* Respect packet‑limit option (-n) */
     if (g_args->packet_limit && packet_count >= g_args->packet_limit) {
         pcap_breakloop(handle);
         return;
     }
 
-    /* Ethernet sanity check */
+    /* Ensure we have at least an Ethernet header */
     if (hdr->caplen < sizeof(struct eth_header)) {
-        fprintf(stderr, "Truncated Ethernet frame (%u bytes)\n", hdr->caplen);
+        fprintf(stderr, "Truncated frame (%u bytes)\n", hdr->caplen);
         return;
     }
 
     const struct eth_header *eth = (const struct eth_header *)packet;
 
-    /* Filter out non‑IPv4 frames early */
-    if (ntohs(eth->type) != 0x0800) {               /* 0x0800 = IPv4 */
+    /* Filter non‑IPv4 frames early (EtherType 0x0800) */
+    if (ntohs(eth->type) != 0x0800)
         return;
-    }
 
-    /* IP header starts right after Ethernet */
     const struct ip *ip_hdr = (const struct ip *)(packet + sizeof(struct eth_header));
-    int proto = ip_hdr->ip_p;                       /* transport protocol */
+    int proto = ip_hdr->ip_p;
 
-    /* Protocol‑specific filtering */
+    /* Protocol filter from CLI ------------------------------------------------*/
     switch (g_args->proto_filter) {
         case PROTO_TCP:  if (proto != IPPROTO_TCP)  return; break;
         case PROTO_UDP:  if (proto != IPPROTO_UDP)  return; break;
         case PROTO_ICMP: if (proto != IPPROTO_ICMP) return; break;
-        default: /* PROTO_ALL */ break;
+        default: break; /* PROTO_ALL */
     }
 
+    /* --- Console output ----------------------------------------------------- */
     printf("Captured packet: %u bytes\n", hdr->len);
     decode_packet(packet, hdr->caplen);
+
+    /* --- CSV logging -------------------------------------------------------- */
+    if (log_file) {
+        char src_ip[INET_ADDRSTRLEN];
+        char dst_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &ip_hdr->ip_src, src_ip, sizeof(src_ip));
+        inet_ntop(AF_INET, &ip_hdr->ip_dst, dst_ip, sizeof(dst_ip));
+
+        const char *proto_str = (proto == IPPROTO_TCP)  ? "TCP"  :
+                                (proto == IPPROTO_UDP)  ? "UDP"  :
+                                (proto == IPPROTO_ICMP) ? "ICMP" : "OTHER";
+
+        /* Timestamp */
+        time_t     now = time(NULL);
+        struct tm *lt  = localtime(&now);
+        char       ts[32];
+        strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", lt);
+
+        fprintf(log_file, "%s,%s,%s,%s,%u\n",
+                ts, src_ip, dst_ip, proto_str, hdr->len);
+        fflush(log_file);
+    }
 
     packet_count++;
 }
@@ -78,9 +101,9 @@ int start_capture(const SnifferArgs *args)
 
     char errbuf[PCAP_ERRBUF_SIZE];
     handle = pcap_open_live(args->interface,
-                            BUFSIZ,          
-                            1,  
-                            1000,        
+                            BUFSIZ,        /* snapshot length         */
+                            1,             /* promiscuous mode        */
+                            1000,          /* timeout in ms           */
                             errbuf);
 
     if (!handle) {
@@ -88,37 +111,43 @@ int start_capture(const SnifferArgs *args)
         return 1;
     }
 
+    if (args->output_file) {
+        log_file = fopen(args->output_file, "w");
+        if (!log_file) {
+            perror("fopen (output file)");
+            pcap_close(handle);
+            return 1;
+        }
+        fprintf(log_file, "Timestamp,Src IP,Dest IP,Protocol,Length\n");
+    }
+
     signal(SIGINT, sigint_handler);
 
-    printf("Listening on %s (filter: %s, limit: %s)\n",
+    printf("Listening on %s | filter: %s | limit: %s | log: %s\n",
            args->interface,
            (args->proto_filter == PROTO_TCP)  ? "TCP"  :
            (args->proto_filter == PROTO_UDP)  ? "UDP"  :
            (args->proto_filter == PROTO_ICMP) ? "ICMP" : "ALL",
-           args->packet_limit ? "ON" : "OFF");
+           args->packet_limit ? "ON" : "OFF",
+           args->output_file  ? args->output_file : "OFF");
 
     if (pcap_loop(handle, 0, handle_packet, NULL) == -1) {
-        fprintf(stderr, "pcap_loop failed: %s\n", pcap_geterr(handle));
+        fprintf(stderr, "pcap_loop error: %s\n", pcap_geterr(handle));
         pcap_close(handle);
+        if (log_file) fclose(log_file);
         return 1;
     }
 
     pcap_close(handle);
     handle = NULL;
 
-    printf("\nCapture finished: %d packet%s processed.\n",
+    if (log_file) {
+        fclose(log_file);
+        log_file = NULL;
+    }
+
+    printf("\nCapture complete — %d packet%s processed.\n",
            packet_count, (packet_count == 1) ? "" : "s");
 
     return 0;
 }
-
-
-/* -------------------------------------------------------------------------
-Option	Meaning
--i <iface>	Network interface
---tcp	Filter only TCP packets
---udp	Filter only UDP packets
---icmp	Filter only ICMP packets
---all	Accept all protocols (default)
--n <count>	Stop after N packets
- */
