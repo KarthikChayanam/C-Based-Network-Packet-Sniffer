@@ -13,7 +13,7 @@ $(BIN): $(SRC)
 	$(CC) $(CFLAGS) $(SRC) -o $(BIN) $(LDFLAGS)
 
 run: $(BIN)
-	sudo ./$(BIN) -i en0 --udp -n 50 -o $(LOG)/packets1.csv
+	sudo ./$(BIN) -i en0 --all -n 100 --pcap $(LOG)/dump.pcap
 
 clean:
 	rm -f $(BIN)

@@ -15,7 +15,8 @@ void decode_packet(const u_char *packet, int size);
 static pcap_t            *handle       = NULL;      /* pcap session handle   */
 static const SnifferArgs *g_args       = NULL;      /* CLI options           */
 static volatile int       packet_count = 0;         /* packets processed     */
-static FILE              *log_file     = NULL;      /* CSV log (optional)    */
+static FILE              *log_file     = NULL;      /* CSV log    */
+static pcap_dumper_t *pcap_dumper = NULL;  /* PCAP file dumper */
 
 static void sigint_handler(int sig)
 {
@@ -92,6 +93,10 @@ static void handle_packet(u_char *user,
         fflush(log_file);
     }
 
+    if (pcap_dumper) {
+        pcap_dump((u_char *)pcap_dumper, hdr, packet);
+    }
+
     packet_count++;
 }
 
@@ -110,6 +115,16 @@ int start_capture(const SnifferArgs *args)
         fprintf(stderr, "pcap_open_live failed: %s\n", errbuf);
         return 1;
     }
+
+    if (args->pcap_output) {
+        pcap_dumper = pcap_dump_open(handle, args->pcap_output);
+        if (!pcap_dumper) {
+            fprintf(stderr, "Error: Cannot open pcap file: %s\n", pcap_geterr(handle));
+            pcap_close(handle);
+            return 1;
+        }
+    }
+
 
     if (args->output_file) {
         log_file = fopen(args->output_file, "w");
@@ -145,6 +160,12 @@ int start_capture(const SnifferArgs *args)
         fclose(log_file);
         log_file = NULL;
     }
+
+    if (pcap_dumper) {
+        pcap_dump_close(pcap_dumper);
+        pcap_dumper = NULL;
+    }
+
 
     printf("\nCapture complete — %d packet%s processed.\n",
            packet_count, (packet_count == 1) ? "" : "s");

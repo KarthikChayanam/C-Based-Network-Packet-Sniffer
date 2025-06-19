@@ -10,13 +10,15 @@ int parse_args(int argc, char *argv[], SnifferArgs *args) {
     args->proto_filter = PROTO_ALL;
     args->packet_limit = 0;
     args->output_file = NULL;
+    args->pcap_output = NULL; 
 
     static struct option long_options[] = {
         {"tcp",   no_argument,       0,  0 },
         {"udp",   no_argument,       0,  1 },
         {"icmp",  no_argument,       0,  2 },
         {"all",   no_argument,       0,  3 },
-        {"output", required_argument, 0, 'o' }, // NEW
+        {"output", required_argument, 0, 'o' },
+        {"pcap", required_argument, 0, 4},
         {0,       0,                 0,  0 }
     };
 
@@ -30,8 +32,9 @@ int parse_args(int argc, char *argv[], SnifferArgs *args) {
             case 1:   args->proto_filter = PROTO_UDP; break;
             case 2:   args->proto_filter = PROTO_ICMP; break;
             case 3:   args->proto_filter = PROTO_ALL; break;
+            case 4:args->pcap_output = optarg; break;
             default:
-                fprintf(stderr, "Usage: %s -i <iface> [--tcp|--udp|--icmp|--all] [-n <count>] [-o <file>]\n", argv[0]);
+                fprintf(stderr, "Usage: %s -i <iface> [--tcp|--udp|--icmp|--all] [-n <count>] [-o <csv>] [--pcap <file>]\n", argv[0]);
                 return 1;
         }
     }
