@@ -4,205 +4,160 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <arpa/inet.h>    
-#include <netinet/ip.h>     
+#include <arpa/inet.h>
+#include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
-#include "args.h"           /* SnifferArgs, enums    */
+#include <stdint.h>
+#include "args.h"
 
 void decode_packet(const u_char *packet, int size);
 
-static pcap_t            *handle       = NULL;      /* pcap session handle   */
-static const SnifferArgs *g_args       = NULL;      /* CLI options           */
-static volatile int       packet_count = 0;         /* packets processed     */
-static FILE              *log_file     = NULL;      /* CSV log    */
-static pcap_dumper_t *pcap_dumper = NULL;  /* PCAP file dumper */
+/* globals */
+static pcap_t            *cap  = NULL;
+static pcap_dumper_t     *dump = NULL;
+static FILE              *csv  = NULL;
+static const SnifferArgs *opt  = NULL;
+static int                seen = 0;
 
-static void sigint_handler(int sig)
+/* ethernet header */
+struct eth_hdr { u_char dst[6], src[6]; uint16_t type; };
+
+/* helpers */
+static void stop(int _) { (void)_; if (cap) pcap_breakloop(cap); }
+
+static void mac_str(const u_char *m, char *s)
 {
-    (void)sig;
-    if (handle) {
-        pcap_breakloop(handle);
-    }
+    sprintf(s, "%02X:%02X:%02X:%02X:%02X:%02X",
+            m[0], m[1], m[2], m[3], m[4], m[5]);
 }
 
-struct eth_header {
-    u_char   dst[6];
-    u_char   src[6];
-    uint16_t type;
-};
-
-static void handle_packet(u_char *user,
-                          const struct pcap_pkthdr *hdr,
-                          const u_char *packet)
+static void box_print(const char *smac, const char *dmac, uint16_t eth_type,
+                      const char *sip, const char *dip, int proto,
+                      uint16_t sport, uint16_t dport)
 {
-    (void)user;   /* not used */
+    char line[128];
+    const char *pname = (proto == IPPROTO_TCP)  ? "TCP"  :
+                        (proto == IPPROTO_UDP)  ? "UDP"  :
+                        (proto == IPPROTO_ICMP) ? "ICMP" : "OTHER";
+    printf("┌──── Ethernet ─────────────────────────────┐\n");
+    snprintf(line, sizeof line, " Src MAC: %s", smac);
+    printf("│ %-41s │\n", line);
+    snprintf(line, sizeof line, " Dst MAC: %s", dmac);
+    printf("│ %-41s │\n", line);
+    snprintf(line, sizeof line, " Type:    0x%04X", eth_type);
+    printf("│ %-41s │\n", line);
+    printf("├──── IP Header ────────────────────────────┤\n");
+    snprintf(line, sizeof line, " Src IP:  %s", sip);
+    printf("│ %-41s │\n", line);
+    snprintf(line, sizeof line, " Dst IP:  %s", dip);
+    printf("│ %-41s │\n", line);
+    snprintf(line, sizeof line, " Proto:   %s (%d)", pname, proto);
+    printf("│ %-41s │\n", line);
 
-    /* Respect packet‑limit option (-n) */
-    if (g_args->packet_limit && packet_count >= g_args->packet_limit) {
-        pcap_breakloop(handle);
-        return;
+    if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
+        printf("├──── %s Segment ──────────────────────────┤\n", pname);
+        snprintf(line, sizeof line, " Src Port: %u", sport);
+        printf("│ %-41s │\n", line);
+        snprintf(line, sizeof line, " Dst Port: %u", dport);
+        printf("│ %-41s │\n", line);
     }
+    printf("└───────────────────────────────────────────┘\n\n\n");
+}
 
-    /* Ensure we have at least an Ethernet header */
-    if (hdr->caplen < sizeof(struct eth_header)) {
-        fprintf(stderr, "Truncated frame (%u bytes)\n", hdr->caplen);
-        return;
-    }
+static void write_csv(const struct pcap_pkthdr *h,
+                      const struct ip *ip, int proto)
+{
+    if (!csv) return;
+    char sip[INET_ADDRSTRLEN], dip[INET_ADDRSTRLEN], ts[32];
+    inet_ntop(AF_INET, &ip->ip_src, sip, sizeof sip);
+    inet_ntop(AF_INET, &ip->ip_dst, dip, sizeof dip);
+    const char *p = (proto == IPPROTO_TCP)  ? "TCP"  :
+                    (proto == IPPROTO_UDP)  ? "UDP"  :
+                    (proto == IPPROTO_ICMP) ? "ICMP" : "OTHER";
+    strftime(ts, sizeof ts, "%F %T", localtime(&h->ts.tv_sec));
+    fprintf(csv, "%s,%s,%s,%s,%u\n", ts, sip, dip, p, h->len);
+    fflush(csv);
+}
 
-    const struct eth_header *eth = (const struct eth_header *)packet;
+/* pcap callback */
+static void cb(u_char *u, const struct pcap_pkthdr *h, const u_char *pkt)
+{
+    (void)u;
+    if (opt->packet_limit && seen >= opt->packet_limit) { pcap_breakloop(cap); return; }
+    if (h->caplen < sizeof(struct eth_hdr)) return;
 
-    /* Filter non‑IPv4 frames early (EtherType 0x0800) */
-    if (ntohs(eth->type) != 0x0800)
-        return;
+    const struct eth_hdr *eth = (const struct eth_hdr *)pkt;
+    if (ntohs(eth->type) != 0x0800) return;
 
-    const struct ip *ip_hdr = (const struct ip *)(packet + sizeof(struct eth_header));
-    int proto = ip_hdr->ip_p;
+    const struct ip *ip = (const struct ip *)(pkt + sizeof *eth);
+    int proto = ip->ip_p;
 
-    /* Protocol filter from CLI ------------------------------------------------*/
-    switch (g_args->proto_filter) {
+    if (opt->proto_num && proto != opt->proto_num) return;
+    switch (opt->proto_filter) {
         case PROTO_TCP:  if (proto != IPPROTO_TCP)  return; break;
         case PROTO_UDP:  if (proto != IPPROTO_UDP)  return; break;
         case PROTO_ICMP: if (proto != IPPROTO_ICMP) return; break;
-        default: break; /* PROTO_ALL */
+        default: break;
     }
 
-    char pkt_src_ip[INET_ADDRSTRLEN];
-    char pkt_dst_ip[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &ip_hdr->ip_src, pkt_src_ip, sizeof(pkt_src_ip));
-    inet_ntop(AF_INET, &ip_hdr->ip_dst, pkt_dst_ip, sizeof(pkt_dst_ip));
+    char sip[INET_ADDRSTRLEN], dip[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &ip->ip_src, sip, sizeof sip);
+    inet_ntop(AF_INET, &ip->ip_dst, dip, sizeof dip);
+    if (opt->src_ip[0] && strcmp(sip, opt->src_ip)) return;
+    if (opt->dst_ip[0] && strcmp(dip, opt->dst_ip)) return;
 
-    // IP filters
-    if (g_args->src_ip[0] && strcmp(pkt_src_ip, g_args->src_ip) != 0)
-        return;
-    if (g_args->dst_ip[0] && strcmp(pkt_dst_ip, g_args->dst_ip) != 0)
-        return;
-
-    if (g_args->proto_num && proto != g_args->proto_num)
-        return;
-
-    // Port filters
+    uint16_t sport = 0, dport = 0;
     if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
-        uint16_t src_port = 0, dst_port = 0;
-
+        const u_char *l4 = (const u_char *)ip + ip->ip_hl * 4;
         if (proto == IPPROTO_TCP) {
-            const struct tcphdr *tcp = (const struct tcphdr *)((u_char *)ip_hdr + ip_hdr->ip_hl * 4);
-            src_port = ntohs(tcp->th_sport);
-            dst_port = ntohs(tcp->th_dport);
+            const struct tcphdr *tcp = (const struct tcphdr *)l4;
+            sport = ntohs(tcp->th_sport); dport = ntohs(tcp->th_dport);
         } else {
-            const struct udphdr *udp = (const struct udphdr *)((u_char *)ip_hdr + ip_hdr->ip_hl * 4);
-            src_port = ntohs(udp->uh_sport);
-            dst_port = ntohs(udp->uh_dport);
+            const struct udphdr *udp = (const struct udphdr *)l4;
+            sport = ntohs(udp->uh_sport); dport = ntohs(udp->uh_dport);
         }
-
-        if (g_args->src_port && src_port != g_args->src_port)
-            return;
-        if (g_args->dst_port && dst_port != g_args->dst_port)
-            return;
+        if (opt->src_port && sport != opt->src_port) return;
+        if (opt->dst_port && dport != opt->dst_port) return;
     }
 
-    /* --- Console output ----------------------------------------------------- */
-    printf("Captured packet: %u bytes\n", hdr->len);
-    decode_packet(packet, hdr->caplen);
+    /* formatted boxed output */
+    char smac[18], dmac[18];
+    mac_str(eth->src, smac);
+    mac_str(eth->dst, dmac);
+    box_print(smac, dmac, ntohs(eth->type), sip, dip, proto, sport, dport);
 
-    /* --- CSV logging -------------------------------------------------------- */
-    if (log_file) {
-        char src_ip[INET_ADDRSTRLEN];
-        char dst_ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &ip_hdr->ip_src, src_ip, sizeof(src_ip));
-        inet_ntop(AF_INET, &ip_hdr->ip_dst, dst_ip, sizeof(dst_ip));
-
-        const char *proto_str = (proto == IPPROTO_TCP)  ? "TCP"  :
-                                (proto == IPPROTO_UDP)  ? "UDP"  :
-                                (proto == IPPROTO_ICMP) ? "ICMP" : "OTHER";
-
-        /* Timestamp */
-        time_t     now = time(NULL);
-        struct tm *lt  = localtime(&now);
-        char       ts[32];
-        strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", lt);
-
-        fprintf(log_file, "%s,%s,%s,%s,%u\n",
-                ts, src_ip, dst_ip, proto_str, hdr->len);
-        fflush(log_file);
-    }
-
-    if (pcap_dumper) {
-        pcap_dump((u_char *)pcap_dumper, hdr, packet);
-    }
-
-    packet_count++;
+    // decode_packet(pkt, h->caplen);  This is output of the old type, replaced with box output
+    write_csv(h, ip, proto);
+    if (dump) pcap_dump((u_char *)dump, h, pkt);
+    ++seen;
 }
 
-int start_capture(const SnifferArgs *args)
+/* entry */
+int start_capture(const SnifferArgs *a)
 {
-    g_args = args;
+    opt = a;
+    char err[PCAP_ERRBUF_SIZE];
+    cap = pcap_open_live(a->interface, BUFSIZ, 1, 1000, err);
+    if (!cap) { fprintf(stderr, "%s\n", err); return 1; }
 
-    char errbuf[PCAP_ERRBUF_SIZE];
-    handle = pcap_open_live(args->interface,
-                            BUFSIZ,        /* snapshot length         */
-                            1,             /* promiscuous mode        */
-                            1000,          /* timeout in ms           */
-                            errbuf);
-
-    if (!handle) {
-        fprintf(stderr, "pcap_open_live failed: %s\n", errbuf);
-        return 1;
+    if (a->output_file) {
+        csv = fopen(a->output_file, "w");
+        if (!csv) { perror("csv"); pcap_close(cap); return 1; }
+        fprintf(csv, "Timestamp,Src IP,Dest IP,Protocol,Length\n");
+    }
+    if (a->pcap_output) {
+        dump = pcap_dump_open(cap, a->pcap_output);
+        if (!dump) { fprintf(stderr, "pcap_dump_open: %s\n", pcap_geterr(cap));
+                     if (csv) fclose(csv); pcap_close(cap); return 1; }
     }
 
-    if (args->pcap_output) {
-        pcap_dumper = pcap_dump_open(handle, args->pcap_output);
-        if (!pcap_dumper) {
-            fprintf(stderr, "Error: Cannot open pcap file: %s\n", pcap_geterr(handle));
-            pcap_close(handle);
-            return 1;
-        }
-    }
+    signal(SIGINT, stop);
+    pcap_loop(cap, 0, cb, NULL);
 
-
-    if (args->output_file) {
-        log_file = fopen(args->output_file, "w");
-        if (!log_file) {
-            perror("fopen (output file)");
-            pcap_close(handle);
-            return 1;
-        }
-        fprintf(log_file, "Timestamp,Src IP,Dest IP,Protocol,Length\n");
-    }
-
-    signal(SIGINT, sigint_handler);
-
-    printf("Listening on %s | filter: %s | limit: %s | log: %s\n",
-           args->interface,
-           (args->proto_filter == PROTO_TCP)  ? "TCP"  :
-           (args->proto_filter == PROTO_UDP)  ? "UDP"  :
-           (args->proto_filter == PROTO_ICMP) ? "ICMP" : "ALL",
-           args->packet_limit ? "ON" : "OFF",
-           args->output_file  ? args->output_file : "OFF");
-
-    if (pcap_loop(handle, 0, handle_packet, NULL) == -1) {
-        fprintf(stderr, "pcap_loop error: %s\n", pcap_geterr(handle));
-        pcap_close(handle);
-        if (log_file) fclose(log_file);
-        return 1;
-    }
-
-    pcap_close(handle);
-    handle = NULL;
-
-    if (log_file) {
-        fclose(log_file);
-        log_file = NULL;
-    }
-
-    if (pcap_dumper) {
-        pcap_dump_close(pcap_dumper);
-        pcap_dumper = NULL;
-    }
-
-
-    printf("\nCapture complete — %d packet%s processed.\n",
-           packet_count, (packet_count == 1) ? "" : "s");
-
+    if (dump) { pcap_dump_close(dump); }
+    if (csv)  { fclose(csv); }
+    pcap_close(cap);
+    printf("Processed %d packets.\n", seen);
     return 0;
 }

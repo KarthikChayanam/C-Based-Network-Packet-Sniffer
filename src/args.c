@@ -58,7 +58,8 @@ int parse_args(int argc, char *argv[], SnifferArgs *args) {
                 break;
             }
             default:
-                fprintf(stderr, "Usage: %s -i <iface> [--tcp|--udp|--icmp|--all] [-n N] [-o file.csv] [--pcap file.pcap] [--src-ip IP] [--dst-ip IP] [--src-port PORT] [--dst-port PORT] [--proto-num N]", argv[0]);
+                fprintf(stderr, "Usage: %s -i <iface> [--tcp|--udp|--icmp|--all] [-n N] [-o file.csv] [--pcap file.pcap] "
+                        "[--src-ip IP] [--dst-ip IP] [--src-port PORT] [--dst-port PORT] [--proto-num N]\n", argv[0]);
                 return 1;
         }
     }
