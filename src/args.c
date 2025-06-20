@@ -16,6 +16,7 @@ int parse_args(int argc, char *argv[], SnifferArgs *args) {
     args->dst_ip[0] = '\0';
     args->src_port = 0;
     args->dst_port = 0;
+    args->proto_num = 0;
 
     static struct option long_options[] = {
         {"tcp",   no_argument,       0,  0 },
@@ -28,6 +29,7 @@ int parse_args(int argc, char *argv[], SnifferArgs *args) {
         {"dst-ip",    required_argument, 0, 6},
         {"src-port",  required_argument, 0, 7},
         {"dst-port",  required_argument, 0, 8},
+        {"proto-num", required_argument, 0, 9},
         {0,       0,                 0,  0 }
     };
 
@@ -46,8 +48,17 @@ int parse_args(int argc, char *argv[], SnifferArgs *args) {
             case 6:   strncpy(args->dst_ip, optarg, INET_ADDRSTRLEN); break;
             case 7:   args->src_port = atoi(optarg); break;
             case 8: args->dst_port = atoi(optarg); break;
+            case 9: {
+                int n = atoi(optarg);
+                if (n < 0 || n > 255) {
+                    fprintf(stderr, "Error: protocol number must be 0‑255\n");
+                    return 1;
+                }
+                args->proto_num = n;
+                break;
+            }
             default:
-                fprintf(stderr, "Usage: %s -i <iface> [--tcp|--udp|--icmp|--all] [-n N] [-o file.csv] [--pcap file.pcap] [--src-ip IP] [--dst-ip IP] [--src-port PORT] [--dst-port PORT]", argv[0]);
+                fprintf(stderr, "Usage: %s -i <iface> [--tcp|--udp|--icmp|--all] [-n N] [-o file.csv] [--pcap file.pcap] [--src-ip IP] [--dst-ip IP] [--src-port PORT] [--dst-port PORT] [--proto-num N]", argv[0]);
                 return 1;
         }
     }

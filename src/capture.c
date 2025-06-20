@@ -67,7 +67,7 @@ static void handle_packet(u_char *user,
         default: break; /* PROTO_ALL */
     }
 
-        char pkt_src_ip[INET_ADDRSTRLEN];
+    char pkt_src_ip[INET_ADDRSTRLEN];
     char pkt_dst_ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &ip_hdr->ip_src, pkt_src_ip, sizeof(pkt_src_ip));
     inet_ntop(AF_INET, &ip_hdr->ip_dst, pkt_dst_ip, sizeof(pkt_dst_ip));
@@ -76,6 +76,9 @@ static void handle_packet(u_char *user,
     if (g_args->src_ip[0] && strcmp(pkt_src_ip, g_args->src_ip) != 0)
         return;
     if (g_args->dst_ip[0] && strcmp(pkt_dst_ip, g_args->dst_ip) != 0)
+        return;
+
+    if (g_args->proto_num && proto != g_args->proto_num)
         return;
 
     // Port filters
