@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <arpa/inet.h>
 #include "args.h"
 
 int parse_args(int argc, char *argv[], SnifferArgs *args) {
@@ -11,6 +12,10 @@ int parse_args(int argc, char *argv[], SnifferArgs *args) {
     args->packet_limit = 0;
     args->output_file = NULL;
     args->pcap_output = NULL; 
+    args->src_ip[0] = '\0';
+    args->dst_ip[0] = '\0';
+    args->src_port = 0;
+    args->dst_port = 0;
 
     static struct option long_options[] = {
         {"tcp",   no_argument,       0,  0 },
@@ -19,6 +24,10 @@ int parse_args(int argc, char *argv[], SnifferArgs *args) {
         {"all",   no_argument,       0,  3 },
         {"output", required_argument, 0, 'o' },
         {"pcap", required_argument, 0, 4},
+        {"src-ip",    required_argument, 0, 5},
+        {"dst-ip",    required_argument, 0, 6},
+        {"src-port",  required_argument, 0, 7},
+        {"dst-port",  required_argument, 0, 8},
         {0,       0,                 0,  0 }
     };
 
@@ -32,9 +41,13 @@ int parse_args(int argc, char *argv[], SnifferArgs *args) {
             case 1:   args->proto_filter = PROTO_UDP; break;
             case 2:   args->proto_filter = PROTO_ICMP; break;
             case 3:   args->proto_filter = PROTO_ALL; break;
-            case 4:args->pcap_output = optarg; break;
+            case 4:   args->pcap_output = optarg; break;
+            case 5:   strncpy(args->src_ip, optarg, INET_ADDRSTRLEN); break;
+            case 6:   strncpy(args->dst_ip, optarg, INET_ADDRSTRLEN); break;
+            case 7:   args->src_port = atoi(optarg); break;
+            case 8: args->dst_port = atoi(optarg); break;
             default:
-                fprintf(stderr, "Usage: %s -i <iface> [--tcp|--udp|--icmp|--all] [-n <count>] [-o <csv>] [--pcap <file>]\n", argv[0]);
+                fprintf(stderr, "Usage: %s -i <iface> [--tcp|--udp|--icmp|--all] [-n N] [-o file.csv] [--pcap file.pcap] [--src-ip IP] [--dst-ip IP] [--src-port PORT] [--dst-port PORT]", argv[0]);
                 return 1;
         }
     }

@@ -4,6 +4,10 @@ build/
 *.out
 *.pcap
 
+log/
+*.pcap
+*.csv
+
 .vscode/
 
 build

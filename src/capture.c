@@ -67,6 +67,37 @@ static void handle_packet(u_char *user,
         default: break; /* PROTO_ALL */
     }
 
+        char pkt_src_ip[INET_ADDRSTRLEN];
+    char pkt_dst_ip[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &ip_hdr->ip_src, pkt_src_ip, sizeof(pkt_src_ip));
+    inet_ntop(AF_INET, &ip_hdr->ip_dst, pkt_dst_ip, sizeof(pkt_dst_ip));
+
+    // IP filters
+    if (g_args->src_ip[0] && strcmp(pkt_src_ip, g_args->src_ip) != 0)
+        return;
+    if (g_args->dst_ip[0] && strcmp(pkt_dst_ip, g_args->dst_ip) != 0)
+        return;
+
+    // Port filters
+    if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
+        uint16_t src_port = 0, dst_port = 0;
+
+        if (proto == IPPROTO_TCP) {
+            const struct tcphdr *tcp = (const struct tcphdr *)((u_char *)ip_hdr + ip_hdr->ip_hl * 4);
+            src_port = ntohs(tcp->th_sport);
+            dst_port = ntohs(tcp->th_dport);
+        } else {
+            const struct udphdr *udp = (const struct udphdr *)((u_char *)ip_hdr + ip_hdr->ip_hl * 4);
+            src_port = ntohs(udp->uh_sport);
+            dst_port = ntohs(udp->uh_dport);
+        }
+
+        if (g_args->src_port && src_port != g_args->src_port)
+            return;
+        if (g_args->dst_port && dst_port != g_args->dst_port)
+            return;
+    }
+
     /* --- Console output ----------------------------------------------------- */
     printf("Captured packet: %u bytes\n", hdr->len);
     decode_packet(packet, hdr->caplen);
