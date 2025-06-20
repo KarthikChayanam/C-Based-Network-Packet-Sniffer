@@ -3,7 +3,7 @@ CC      = gcc
 CFLAGS  = -Wall -Wextra -std=c99
 LDFLAGS = -lpcap
 
-SRC := $(wildcard src/*.c)
+SRC := $(wildcard src/*.c src/decode/*.c)
 BIN = build
 LOG = log
 
