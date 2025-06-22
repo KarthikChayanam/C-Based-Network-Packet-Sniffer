@@ -8,6 +8,11 @@ log/
 *.pcap
 *.csv
 
+reports/
+*.png
+*html
+*.csv
+
 .vscode/
 
 build

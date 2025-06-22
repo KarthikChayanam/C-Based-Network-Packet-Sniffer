@@ -19,7 +19,7 @@ clean:
 	rm -f $(BIN)
 
 report:
-	python3 src/scripts/report.py
+	python3 scripts/report.py
 
 
 .PHONY: all run clean
